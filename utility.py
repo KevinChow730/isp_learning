@@ -18,7 +18,7 @@ class special_function:
         width, height = self.data.shape
 
         # 空间域，控制上离中心像素多远的邻居还会被拿来平均——越大就越“看得远”、平滑得越狠
-        sigma_spatial = min(height, width) / 10.0
+        sigma_spatial = min(height, width) / 16
 
         edge_min = np.min(edge)
         edge_max = np.max(edge)
@@ -35,14 +35,12 @@ class special_function:
         padding_xy = np.floor(2. * derived_sigma_spatial) + 1.
         padding_z = np.floor(2. * derived_sigma_range) + 1.
 
+        '''
         # 图像->3d点云，x, y, z分别是图像的列、行、像素值
         # 考虑图像
         # 1  1
         # 0  1
-        # 
-        # A small ASCII isometric sketch (parallelogram 3D view):
-        #
-        #            z (range bins)
+        #            z
         #            ^
         #            |
         #            1----1
@@ -55,15 +53,70 @@ class special_function:
         #        v
         #        x
         #
-
+        '''
         downsample_width = np.floor((width - 1) / sampling_spatial) + 1 + 2 * padding_xy
         downsample_height = np.floor((height - 1) / sampling_spatial) + 1 + 2 * padding_xy
         downsample_depth = np.floor(edge_delta / sampling_range) + 1 + 2 * padding_z
 
-        yy, xx = np.meshgrid(np.arange(width), np.arange(height))
-        
+        yy, xx = np.meshgrid(np.arange(width), np.arange(height))  # 分别存储所有点的列坐标和行坐标，xx[i, j]是第i行第j列的列坐标，yy[i, j]是第i行第j列的行坐标
 
-        return
+        # 把原图像素点投影到3d网格上，网格的x、y、z分别是图像的列、行、像素值
+        grid_xx = np.uint16(np.round(xx / sampling_spatial) + padding_xy + 1)
+        grid_yy = np.uint16(np.round(yy / sampling_spatial) + padding_xy + 1)
+        grid_zz = np.uint16(np.round((edge - edge_min) / sampling_range) + padding_z + 1)
+
+        grid_data = np.zeros((downsample_width, downsample_height, downsample_depth), dtype=np.float32)
+        grid_weight = np.zeros((downsample_width, downsample_height, downsample_depth), dtype=np.float32)
+
+        for i in range(width):
+            for j in range(height):
+                x = grid_xx[i, j]
+                y = grid_yy[i, j]
+                z = grid_zz[i, j]
+
+                grid_data[x, y, z] += self.data[i, j]  # 多个像素被投影到同一个网格上，网格内的值是所有像素值的平均值
+                grid_weight[x, y, z] += 1.0  # 统计每个网格上有多少像素被投影到这个网格上
+        
+        # 定义一个三维高斯核，分别在空间域和值域上做高斯平滑
+        kernel_width = 2. * derived_sigma_spatial + 1.
+        kernel_height = kernel_width
+        kernel_depth = 2. * derived_sigma_range + 1.
+
+        kernel_x, kernel_y, kernel_z = np.meshgrid(np.arange(kernel_width), np.arange(kernel_height), np.arange(kernel_depth))
+        kernel_x -= np.floor(kernel_width / 2.)
+        kernel_y -= np.floor(kernel_height / 2.)
+        kernel_z -= np.floor(kernel_depth / 2.)
+
+        kernel_r_squared = (kernel_x**2 + kernel_y**2) / derived_sigma_spatial**2\
+            + (kernel_z**2) / derived_sigma_range**2
+        kernel = np.exp(-0.5 * kernel_r_squared)
+
+        blurred_grid_data = ndimage.convolve(grid_data, kernel, mode='reflect')
+        blurred_grid_weight = ndimage.convolve(grid_weight, kernel, mode='reflect')
+
+        # divide
+        blurred_grid_weight = np.asarray(blurred_grid_weight)
+        mask = blurred_grid_weight == 0
+        blurred_grid_weight[mask] = -2.  # 处理0值
+        normalized_blurred_grid = blurred_grid_data/blurred_grid_weight
+        mask = blurred_grid_weight < -1
+        normalized_blurred_grid[mask] = 0.  # 赋0
+
+        # upsample
+        grid_xx_r = (xx / sampling_spatial) + padding_xy + 1.
+        grid_yy_r = (yy / sampling_spatial) + padding_xy + 1.
+        grid_zz_r = (edge - edge_min) / sampling_range + padding_z + 1.
+
+        n_x, n_y, n_z = normalized_blurred_grid.shape  # 网格中有多少离散采样点
+        points = (np.arange(n_x), np.arange(n_y), np.arange(n_z))
+
+        x_i = (grid_xx_r, grid_yy_r, grid_zz_r)
+
+        output = interpolate.interpn(points, 
+                                    normalized_blurred_grid, 
+                                    x_i, 
+                                    method="linear")
+        return output
 
 class filter:
     @staticmethod
