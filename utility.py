@@ -118,6 +118,12 @@ class special_function:
                                     method="linear")
         return output
 
+    def soft_coring(self, slope, tau, gamma_speed):
+        '''soft coring，避免过度锐化导致的噪点和光晕
+        '''
+        return slope * self.data * (1 -np.exp(-(np.abs(self.data) / tau) ** gamma_speed))
+
+
 class filter:
     @staticmethod
     def gaussian(kernel_size=3, sigma=1):
@@ -194,5 +200,27 @@ class edge_detection:
             return edge
         
 
+class helper:
+    def __init__(self, data):
+        self.data = np.asarray(data, dtype=np.float32)
 
+    def sigma_filtering(self, kernel_size=3, sigma=1.0):
+        '''只对中心点附近值域相差不超过sigma的像素进行平均，从而消除离群点
+        '''
+        height, width = self.data.shape
+        padding = kernel_size // 2
+        padded_data = np.pad(self.data, (padding, padding), mode='reflect')
+
+        out = np.empty_like(self.data)
+        
+        for i in range(height):
+            for j in range(width):
+                local_region = padded_data[i:i+kernel_size, j:j+kernel_size]
+                center_value = self.data[i, j]
+                mask = np.abs(local_region - center_value) <= sigma
+                if np.sum(mask) > 0:
+                    out[i, j] = np.mean(local_region[mask])
+                else:
+                    out[i, j] = center_value  # 如果没有满足条件的像素，就保持原值不变
+        return out
     

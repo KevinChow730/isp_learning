@@ -175,7 +175,7 @@ class tone_mapping:
         alpha = 0.5 ** image_blur
         return np.clip(clip_range[1] * ((self.data/clip_range[1]) ** alpha), clip_range[0], clip_range[1])
     
-    def dynamic_range_compression(self, type="normal", bound=[-40., 260.], clip_range=[0, 65535]):
+    def dynamic_range_compression(self, type="normal", drc_bound=[-40., 260.], clip_range=[0, 65535]):
         '''把亮度当作是base和detail的乘积，
         压缩base，保留detail
         '''
@@ -183,6 +183,50 @@ class tone_mapping:
             edge = self.data
         elif type == "joint":
             edge = utility.edge_detection(self.data).sobel(kernel_size=3, type="gradient_magnitude")
+
+        # 保边平滑的目的：防止跨边缘的平滑产生奇怪光晕
+        y_bilateral = utility.special_function(self.data).bilateral_filter(edge)
+        # detail = 原图 / base，base对比度压缩，detail保持不变，这样就能在压缩亮度的同时保持细节
+        detail = self.data / (y_bilateral + 1e-6)
+
+        # base对比度压缩，亮度中心点保持不变
+        C = clip_range[1] * drc_bound[0] / 255.
+        T = clip_range[1] * drc_bound[1] / 255.
+        F = (T * (C + clip_range[1])) / (clip_range[1] * (T - C))
+        base_compressed = (F * (y_bilateral - clip_range[1]/2)) + clip_range[1]/2
+
+        y_out = base_compressed * detail
+        return np.clip(y_out, clip_range[0], clip_range[1])
+    
+
+class sharpening:
+    def __init__(self, data):
+        self.data = np.asarray(data, dtype=np.float32)
+
+    def unsharp_masking(self, kernel_size=5, sigma=1.0, tau=0.05, gamma_speed=2, clip_range=[0, 65535]):
+        '''锐化，增强边缘细节
+        '''
+        gaussian_kernel = utility.filter().gaussian(kernel_size=kernel_size, sigma=sigma)
+        image_blur = signal.convolve2d(self.data, gaussian_kernel, mode='same', boundary='symm')
+        image_highpass = self.data - image_blur
+
+        # soft coring，避免过度锐化导致的噪点和光晕
+        image_highpass_soft_coring = utility.special_function(image_highpass).soft_coring(slope=1, tau=tau, gamma_speed=gamma_speed)
+        return np.clip(self.data + image_highpass_soft_coring, clip_range[0], clip_range[1])
+
+
+class noise_reduction:
+    def __init__(self, data, clip_range=[0, 65535]):
+        self.data = np.asarray(data, dtype=np.float32)
+        self.clip_range = clip_range
+
+    def sigma_filter(self, kernel_size=5, sigma=1.0):
+        '''双边滤波，既考虑空间距离又考虑像素值差异，能够在去噪的同时保持边缘细节
+        '''
+        return np.clip(utility.helper(self.data).sigma_filtering(kernel_size=kernel_size, sigma=sigma), self.clip_range[0], self.clip_range[1])
+
+
+
 
             
 
